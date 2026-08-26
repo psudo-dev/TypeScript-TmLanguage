@@ -119,5 +119,5 @@ jobs:
 
           gh issue create \
             --repo psudo-dev/TypeScript-TmLanguage \
-            --title "Upstream .tmLanguage changes detected" \
+            --title "upstream .tmLanguage changes detected" \
             --body "$BODY"
