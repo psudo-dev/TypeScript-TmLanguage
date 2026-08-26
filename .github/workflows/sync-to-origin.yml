@@ -38,7 +38,7 @@ jobs:
 
           if ! git merge upstream/master --no-edit 2> sync-error.txt; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
-            echo "Merge failed:"
+            echo "merge failed:"
             cat sync-error.txt
             git merge --abort || true
             exit 0
@@ -54,8 +54,8 @@ jobs:
         run: |
           gh issue create \
             --repo psudo-dev/TypeScript-TmLanguage \
-            --title "Upstream sync failed" \
-            --body "The scheduled merge with upstream failed, likely due to a real content conflict (not just divergent history). Manual resolution required."
+            --title "upstream sync failed" \
+            --body "the scheduled merge with upstream failed, likely due to a real content conflict (not just divergent history). manual resolution required."
 
       - name: get new commit
         id: after
@@ -63,7 +63,7 @@ jobs:
         run: |
           SHA=$(git rev-parse HEAD)
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "New SHA: $SHA"
+          echo "new SHA: $SHA"
 
       - name: check for tmLanguage changes
         id: changes
@@ -114,7 +114,7 @@ jobs:
           $FILES
           \`\`\`
 
-          Compare:
+          compare:
           https://github.com/psudo-dev/TypeScript-TmLanguage/compare/$OLD_SHA...$NEW_SHA"
 
           gh issue create \
