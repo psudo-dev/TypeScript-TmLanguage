@@ -1,0 +1,123 @@
+name: sync to origin
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 12 * * *"
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: get current commit
+        id: before
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Current SHA: $SHA"
+
+      - name: sync fork with upstream
+        id: sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/microsoft/TypeScript-TmLanguage.git
+          git fetch upstream master
+
+          if ! git merge upstream/master --no-edit 2> sync-error.txt; then
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            echo "Merge failed:"
+            cat sync-error.txt
+            git merge --abort || true
+            exit 0
+          fi
+
+          echo "failed=false" >> "$GITHUB_OUTPUT"
+          git push origin master
+
+      - name: create conflict issue
+        if: steps.sync.outputs.failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --repo psudo-dev/TypeScript-TmLanguage \
+            --title "Upstream sync failed" \
+            --body "The scheduled merge with upstream failed, likely due to a real content conflict (not just divergent history). Manual resolution required."
+
+      - name: get new commit
+        id: after
+        if: steps.sync.outputs.failed == 'false'
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "New SHA: $SHA"
+
+      - name: check for tmLanguage changes
+        id: changes
+        if: steps.sync.outputs.failed == 'false' && steps.before.outputs.sha != steps.after.outputs.sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OLD_SHA: ${{ steps.before.outputs.sha }}
+          NEW_SHA: ${{ steps.after.outputs.sha }}
+        run: |
+          gh api \
+            repos/psudo-dev/TypeScript-TmLanguage/compare/$OLD_SHA...$NEW_SHA \
+            --jq '.files[].filename' > changed-files.txt
+
+          echo "Changed files:"
+          cat changed-files.txt
+
+          echo
+          echo ".tmLanguage files:"
+
+          TM_LANGUAGE_FILES=$(grep -E '\.tmLanguage$' changed-files.txt || true)
+
+          if [ -z "$TM_LANGUAGE_FILES" ]; then
+            echo "No .tmLanguage files changed."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "$TM_LANGUAGE_FILES"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "files<<EOF"
+            echo "$TM_LANGUAGE_FILES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: create notification issue
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OLD_SHA: ${{ steps.before.outputs.sha }}
+          NEW_SHA: ${{ steps.after.outputs.sha }}
+          FILES: ${{ steps.changes.outputs.files }}
+        run: |
+          BODY="Upstream changed the following .tmLanguage files:
+
+          \`\`\`
+          $FILES
+          \`\`\`
+
+          Compare:
+          https://github.com/psudo-dev/TypeScript-TmLanguage/compare/$OLD_SHA...$NEW_SHA"
+
+          gh issue create \
+            --repo psudo-dev/TypeScript-TmLanguage \
+            --title "Upstream .tmLanguage changes detected" \
+            --body "$BODY"
