@@ -9,82 +9,106 @@ permissions:
   contents: write
   issues: write
 
+concurrency:
+  group: sync-to-origin
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
 
     steps:
-      - name: checkout
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: get current commit
+      - name: Get current commit
         id: before
         run: |
           SHA=$(git rev-parse HEAD)
-
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-
           echo "Current SHA: $SHA"
 
-      - name: sync fork with upstream
+      - name: Sync fork with upstream
         id: sync
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git remote add upstream https://github.com/microsoft/TypeScript-TmLanguage.git
-          git fetch upstream master
 
+          # Retry logic for git fetch (5s, 15s, 45s, 90s, 300s)
+          DELAYS=(5 15 45 90 300)
+          FETCH_SUCCESS=false
+
+          for i in "${!DELAYS[@]}"; do
+            echo "Attempting git fetch (Attempt $((i+1)))..."
+            if git fetch upstream master; then
+              FETCH_SUCCESS=true
+              break
+            fi
+            echo "git fetch failed. Waiting ${DELAYS[$i]}s..."
+            sleep ${DELAYS[$i]}
+          done
+
+          if [ "$FETCH_SUCCESS" = "false" ]; then
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            echo "failure=fetch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Merge operations do not retry (conflicts are deterministic)
           if ! git merge upstream/master --no-edit 2> sync-error.txt; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
             echo "failure=merge" >> "$GITHUB_OUTPUT"
-
             echo "Merge failed:"
             cat sync-error.txt
-
             git merge --abort || true
             exit 0
           fi
 
-          if ! git push origin master 2> push-error.txt; then
+          # Retry logic for git push (5s, 15s, 45s, 90s, 300s)
+          PUSH_SUCCESS=false
+          for i in "${!DELAYS[@]}"; do
+            echo "Attempting git push (Attempt $((i+1)))..."
+            if git push origin master 2>> push-error.txt; then
+              PUSH_SUCCESS=true
+              break
+            fi
+            echo "git push failed. Waiting ${DELAYS[$i]}s..."
+            sleep ${DELAYS[$i]}
+          done
+
+          if [ "$PUSH_SUCCESS" = "false" ]; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
             echo "failure=push" >> "$GITHUB_OUTPUT"
-
             echo "Push failed:"
             cat push-error.txt
-
             exit 0
           fi
 
           echo "failed=false" >> "$GITHUB_OUTPUT"
 
-      - name: create sync failure issue
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+          cache-dependency-path: .github/scripts/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefix .github/scripts
+
+      - name: Create sync failure issue
         if: steps.sync.outputs.failed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FAILURE: ${{ steps.sync.outputs.failure }}
-        run: |
-          if [ "$FAILURE" = "merge" ]; then
-            TITLE="upstream sync failed: merge conflict"
-            BODY="The scheduled merge with upstream failed.
+        run: npx tsx .github/scripts/src/sync-failure-issue.ts
 
-          The fork could not merge microsoft:master into master automatically. Manual resolution is required."
-          else
-            TITLE="upstream sync failed: push error"
-            BODY="The scheduled sync merged upstream locally, but pushing the result to origin failed.
-
-          Manual investigation is required."
-          fi
-
-          gh issue create \
-            --repo psudo-dev/TypeScript-TmLanguage \
-            --title "$TITLE" \
-            --body "$BODY"
-
-      - name: get new commit
+      - name: Get new commit
         id: after
         if: steps.sync.outputs.failed == 'false'
         run: |
@@ -94,7 +118,7 @@ jobs:
 
           echo "New SHA: $SHA"
 
-      - name: check for tmLanguage changes
+      - name: Check for tmLanguage changes
         id: changes
         if: steps.sync.outputs.failed == 'false' && steps.before.outputs.sha != steps.after.outputs.sha
         env:
@@ -102,15 +126,22 @@ jobs:
           OLD_SHA: ${{ steps.before.outputs.sha }}
           NEW_SHA: ${{ steps.after.outputs.sha }}
         run: |
-          gh api \
-            repos/psudo-dev/TypeScript-TmLanguage/compare/$OLD_SHA...$NEW_SHA \
-            --jq '.files[].filename' > changed-files.txt
+          DELAYS=(5 15 45 90 300)
+          API_SUCCESS=false
 
-          echo "Changed files:"
-          cat changed-files.txt
+          for i in "${!DELAYS[@]}"; do
+            if gh api repos/psudo-dev/TypeScript-TmLanguage/compare/$OLD_SHA...$NEW_SHA --jq '.files[].filename' > changed-files.txt; then
+              API_SUCCESS=true
+              break
+            fi
+            echo "gh api failed. Retrying in ${DELAYS[$i]}s..."
+            sleep ${DELAYS[$i]}
+          done
 
-          echo
-          echo ".tmLanguage files:"
+          if [ "$API_SUCCESS" = "false" ]; then
+            echo "Failed to fetch compare data from GitHub API after all retries."
+            exit 1
+          fi
 
           TM_LANGUAGE_FILES=$(grep -E '\.tmLanguage$' changed-files.txt || true)
 
@@ -120,34 +151,20 @@ jobs:
             exit 0
           fi
 
-          echo "$TM_LANGUAGE_FILES"
-
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
+          EOF_DELIMITER=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
           {
-            echo "files<<EOF"
+            echo "files<<${EOF_DELIMITER}"
             echo "$TM_LANGUAGE_FILES"
-            echo "EOF"
+            echo "${EOF_DELIMITER}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: create notification issue
+      - name: Create notification issue
         if: steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OLD_SHA: ${{ steps.before.outputs.sha }}
           NEW_SHA: ${{ steps.after.outputs.sha }}
           FILES: ${{ steps.changes.outputs.files }}
-        run: |
-          BODY="Upstream changed the following .tmLanguage files:
-
-          \`\`\`
-          $FILES
-          \`\`\`
-
-          Compare:
-          https://github.com/psudo-dev/TypeScript-TmLanguage/compare/$OLD_SHA...$NEW_SHA"
-
-          gh issue create \
-            --repo psudo-dev/TypeScript-TmLanguage \
-            --title "Upstream .tmLanguage changes detected" \
-            --body "$BODY"
+        run: npx tsx .github/scripts/src/create-notification-issue.ts
