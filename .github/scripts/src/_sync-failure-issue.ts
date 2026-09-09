@@ -1,3 +1,10 @@
+// - name: Create sync failure issue
+//   if: steps.sync.outputs.failed == 'true'
+//   env:
+//     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+//     FAILURE: ${{ steps.sync.outputs.failure }}
+//   run: npx tsx .github/scripts/src/_sync-failure-issue.ts
+
 import { Issue } from "./types.ts";
 import { createIssueWithRetry } from "./create-issue.ts";
 
@@ -18,7 +25,9 @@ Manual investigation is required.`,
 			title: "Upstream sync failed: merge conflict",
 			body: `The scheduled merge with upstream failed.
 
-The fork could not merge microsoft:master into master automatically. Manual resolution is required.`,
+The fork could not merge microsoft:master into master automatically.
+
+Manual resolution is required.`,
 		};
 	}
 

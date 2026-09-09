@@ -1,4 +1,4 @@
-name: sync to origin
+name: Sync to Origin
 
 on:
   workflow_dispatch:
@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   sync:
+    name: Sync and check for changes
     runs-on: ubuntu-latest
 
     steps:
@@ -55,14 +56,12 @@ jobs:
 
           if [ "$FETCH_SUCCESS" = "false" ]; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
-            echo "failure=fetch" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # Merge operations do not retry (conflicts are deterministic)
           if ! git merge upstream/master --no-edit 2> sync-error.txt; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
-            echo "failure=merge" >> "$GITHUB_OUTPUT"
             echo "Merge failed:"
             cat sync-error.txt
             git merge --abort || true
@@ -83,30 +82,12 @@ jobs:
 
           if [ "$PUSH_SUCCESS" = "false" ]; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
-            echo "failure=push" >> "$GITHUB_OUTPUT"
             echo "Push failed:"
             cat push-error.txt
             exit 0
           fi
 
           echo "failed=false" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "lts/*"
-          cache: "npm"
-          cache-dependency-path: .github/scripts/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci --prefix .github/scripts
-
-      - name: Create sync failure issue
-        if: steps.sync.outputs.failed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FAILURE: ${{ steps.sync.outputs.failure }}
-        run: npx tsx .github/scripts/src/sync-failure-issue.ts
 
       - name: Get new commit
         id: after
@@ -159,6 +140,18 @@ jobs:
             echo "$TM_LANGUAGE_FILES"
             echo "${EOF_DELIMITER}"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        if: steps.changes.outputs.changed == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+          cache-dependency-path: .github/scripts/package-lock.json
+
+      - name: Install dependencies
+        if: steps.changes.outputs.changed == 'true'
+        run: npm ci --prefix .github/scripts
 
       - name: Create notification issue
         if: steps.changes.outputs.changed == 'true'
